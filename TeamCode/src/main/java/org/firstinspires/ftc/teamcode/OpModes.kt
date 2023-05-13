@@ -2,7 +2,6 @@ package org.firstinspires.ftc.teamcode
 
 import com.acmerobotics.dashboard.FtcDashboard
 import com.acmerobotics.dashboard.telemetry.MultipleTelemetry
-import com.acmerobotics.dashboard.telemetry.TelemetryPacket
 import com.qualcomm.hardware.lynx.LynxModule
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp
@@ -42,26 +41,11 @@ class ManualOpMode : LinearOpMode() {
         while (!isStopRequested){
             lynxModules.forEach { it.clearBulkCache() }
 
-            /*drive.applyPower(
+            drive.applyDrivePower(
                 Twist2d(
                     gamepad1.left_stick_y.toDouble(),
                     gamepad1.left_stick_x.toDouble(),
                     -gamepad1.right_stick_x.toDouble()
-                )
-            )*/
-
-            drive.applyWheelCommand(
-                holoCommand(
-                    Pose2dDual(
-                        Vector2dDual(
-                            Dual.of(drive.position.translation.x, gamepad1.left_stick_y.toDouble(), 0.0),
-                            Dual.of(drive.position.translation.y, gamepad1.left_stick_x.toDouble(), 0.0)
-                        ),
-                        Rotation2dDual.exp(
-                            Dual.of(drive.position.rotation.log(), -gamepad1.right_stick_x.toDouble(), 0.0)
-                        )
-                    ),
-                    drive.position
                 )
             )
 
@@ -87,7 +71,7 @@ class OdometryTunerOpMode : LinearOpMode() {
         val angularDisp = 2.0 * PI * LocalizerConfig.TuningTurns
 
         while (opModeIsActive()) {
-            drive.applyPower(
+            drive.applyDrivePower(
                 Twist2d(
                     0.0,
                     0.0,
@@ -168,24 +152,19 @@ class CoyoteDownload : LinearOpMode() {
 @TeleOp(name = "Coyote", group = "Coyote")
 class CoyoteOpMode : LinearOpMode() {
     override fun runOpMode() {
+        val dashboard = FtcDashboard.getInstance()
+        dashboard.telemetryTransmissionInterval = 10
+        telemetry.isAutoClear = true
+        telemetry = MultipleTelemetry(telemetry, dashboard.telemetry)
+
         val editorProject = loadRobotCoyoteProject()
 
         val savedNodeProject = editorProject.NodeProjects[NodeProjectName]
             ?: error("Failed to get node project $NodeProjectName")
 
-        val rootJsonNode = savedNodeProject
-            .RootNodes.filter { it.Name == EntryNodeName }
-            .also {
-                if(it.isEmpty()) {
-                    error("Failed to find root node $EntryNodeName")
-                }
+        val drive = MecanumDrive(hardwareMap)
 
-                if(it.size != 1) {
-                    error("Ambiguous root node $EntryNodeName")
-                }
-            }.first()
-
-        val nodeProject = loadNodeProject(
+        val node = loadNodeProject(
             savedNodeProject.RootNodes,
             BehaviorMapBuilder().also { b ->
                 b.add("Sequence", { ctx -> BehaviorSequenceNode(ctx.name, ctx.runOnce, ctx.childNodes) })
@@ -205,7 +184,47 @@ class CoyoteOpMode : LinearOpMode() {
                         ctx.node.bind(target.root)
                     }
                 )
+
+                b.add("Motion", { ctx -> BehaviorMotionNode(ctx, editorProject, drive) })
             }.build()
-        )
+        ).behaviors
+            .filter { it.root.name == EntryNodeName }
+            .also {
+                if(it.isEmpty()) {
+                    error("Failed to find root node $EntryNodeName")
+                }
+
+                if(it.size != 1) {
+                    error("Ambiguous root node $EntryNodeName")
+                }
+            }
+            .first()
+            .root
+
+        val lynxModules = hardwareMap.getAll(LynxModule::class.java)
+        lynxModules.forEach { it.bulkCachingMode = LynxModule.BulkCachingMode.MANUAL }
+
+        val context = BehaviorContext()
+
+        waitForStart()
+
+        fun needsStop() = isStopRequested || gamepad1.left_bumper || gamepad1.right_bumper || gamepad2.left_bumper || gamepad2.right_bumper
+
+        try {
+            while (!needsStop()) {
+                lynxModules.forEach { it.clearBulkCache() }
+
+                val status = node.getStatus(context)
+
+                if(status != BehaviorStatus.Running){
+                    break
+                }
+
+                drive.update()
+            }
+        }
+        finally {
+            drive.resetPower()
+        }
     }
 }
