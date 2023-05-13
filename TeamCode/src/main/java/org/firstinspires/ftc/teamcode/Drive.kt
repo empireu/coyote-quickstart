@@ -6,6 +6,9 @@ import com.qualcomm.robotcore.hardware.DcMotorSimple
 import com.qualcomm.robotcore.hardware.HardwareMap
 import empireu.coyote.MecanumKinematics
 import empireu.coyote.Odometry
+import empireu.coyote.Twist2d
+import empireu.coyote.Twist2dDual
+import org.firstinspires.ftc.teamcode.dashboard.DriveConfig
 import org.firstinspires.ftc.teamcode.dashboard.LocalizerConfig.*
 
 class Encoder(val motor: DcMotorEx, var sign: Int = 1) {
@@ -35,21 +38,21 @@ class Encoder(val motor: DcMotorEx, var sign: Int = 1) {
     }
 }
 
-private fun convertTicks(ticks: Double) = WheelRadius * 2.0 * Math.PI * ticks / TPR
-private fun Encoder.readDistIncr() = convertTicks(this.readIncr().toDouble())
+fun convertTicks(ticks: Double) = WheelRadius * 2.0 * Math.PI * ticks / TPR
+fun Encoder.readDistIncr() = convertTicks(this.readIncr().toDouble())
 
 class Holo3WheelLocalizer(hardwareMap: HardwareMap) {
-    private val lEnc = Encoder(hardwareMap, "MotorBR")
-    private val rEnc = Encoder(hardwareMap, "MotorFL")
-    private val cEnc = Encoder(hardwareMap, "MotorFR").reversed()
+    val lEnc = Encoder(hardwareMap, "MotorBR")
+    val rEnc = Encoder(hardwareMap, "MotorFL")
+    val cEnc = Encoder(hardwareMap, "MotorFR").reversed()
 
     fun readIncr() = Odometry.holo3WheelIncr(
         lIncr = lEnc.readDistIncr(),
         rIncr = rEnc.readDistIncr(),
         cIncr = cEnc.readDistIncr(),
-        lY = LROffset,
-        rY = -LROffset,
-        cX = -COffset
+        lY = LY,
+        rY = RY,
+        cX = CX
     )
 }
 
@@ -73,6 +76,7 @@ class MecanumDrive(hardwareMap: HardwareMap) {
                 it.achieveableMaxRPMFraction = 1.0
             }
 
+            motor.mode = DcMotor.RunMode.STOP_AND_RESET_ENCODER
             motor.mode = DcMotor.RunMode.RUN_WITHOUT_ENCODER
             motor.zeroPowerBehavior = DcMotor.ZeroPowerBehavior.BRAKE
         }
@@ -85,10 +89,18 @@ class MecanumDrive(hardwareMap: HardwareMap) {
         motors.forEach { it.power = 0.0 }
     }
 
-    fun applyVelocities(vel: MecanumKinematics.MecanumVelocitiesDual) {
+    fun applyPower(power: Twist2d) {
+        val vel = MecanumKinematics.inverse(
+            Twist2dDual.const(power),
+            DriveConfig.A,
+            DriveConfig.B
+        )
+
         motorFL.power = vel.frontLeft.value
         motorFR.power = vel.frontRight.value
         motorBL.power = vel.backLeft.value
         motorBR.power = vel.backRight.value
     }
+
+
 }

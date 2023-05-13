@@ -11,6 +11,8 @@ import empireu.coyote.Pose2d
 import empireu.coyote.Twist2d
 import empireu.coyote.Twist2dDual
 import org.firstinspires.ftc.teamcode.dashboard.DriveConfig
+import org.firstinspires.ftc.teamcode.dashboard.LocalizerConfig
+import kotlin.math.PI
 
 @TeleOp(name = "Motor Test")
 class MotorTestOpMode: LinearOpMode() {
@@ -56,19 +58,13 @@ class ManualOpMode : LinearOpMode() {
                 telemetry.addData("Update Rate", 1.0 / ftAvg.update(elapsed))
             }
 
-            val velocities = MecanumKinematics.inverse(
-                Twist2dDual.const(
-                    Twist2d(
-                        gamepad1.left_stick_y.toDouble(),
-                        gamepad1.left_stick_x.toDouble(),
-                        -gamepad1.right_stick_x.toDouble()
-                    )
-                ),
-                DriveConfig.A,
-                DriveConfig.B
+            drive.applyPower(
+                Twist2d(
+                    gamepad1.left_stick_y.toDouble(),
+                    gamepad1.left_stick_x.toDouble(),
+                    -gamepad1.right_stick_x.toDouble()
+                )
             )
-
-            drive.applyVelocities(velocities)
 
             //telemetry.addData("l", localizer.lEnc.readPosition())
             //telemetry.addData("r", localizer.rEnc.readPosition())
@@ -91,5 +87,47 @@ class ManualOpMode : LinearOpMode() {
                 history.removeAt(0)
             }
         }
+    }
+}
+
+@TeleOp(name = "Odometry Tuner")
+class OdometryTunerOpMode : LinearOpMode() {
+    override fun runOpMode() {
+        telemetry = FtcDashboard.getInstance().telemetry
+
+        val drive = MecanumDrive(hardwareMap)
+        val localizer = Holo3WheelLocalizer(hardwareMap)
+
+        waitForStart()
+
+        var l = 0.0
+        var r = 0.0
+        var c = 0.0
+
+        val angularDisp = 2.0 * PI * LocalizerConfig.TuningTurns
+
+        while (opModeIsActive()) {
+            drive.applyPower(
+                Twist2d(
+                    0.0,
+                    0.0,
+                    -gamepad1.right_stick_x.toDouble() * 4
+                )
+            )
+
+            l += localizer.lEnc.readDistIncr()
+            r += localizer.rEnc.readDistIncr()
+            c += localizer.cEnc.readDistIncr()
+
+            telemetry.addData("left distance", l / angularDisp)
+            telemetry.addData("right distance", r / angularDisp)
+            telemetry.addData("center distance", c / angularDisp)
+            telemetry.update()
+        }
+
+        // Encoders are reading 0 around the time of stopping. I kept the calculation inside the loop because of this.
+        // Why is this happening, and how do I fix it?
+        // I am clearing the readout here so as to not cause confusion.
+        telemetry.clear()
     }
 }
