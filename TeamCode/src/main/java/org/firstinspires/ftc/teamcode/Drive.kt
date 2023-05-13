@@ -1,14 +1,13 @@
 package org.firstinspires.ftc.teamcode
 
+import com.acmerobotics.dashboard.FtcDashboard
+import com.acmerobotics.dashboard.telemetry.TelemetryPacket
 import com.qualcomm.robotcore.hardware.DcMotor
 import com.qualcomm.robotcore.hardware.DcMotorEx
 import com.qualcomm.robotcore.hardware.DcMotorSimple
 import com.qualcomm.robotcore.hardware.HardwareMap
-import empireu.coyote.MecanumKinematics
-import empireu.coyote.Odometry
-import empireu.coyote.Twist2d
-import empireu.coyote.Twist2dDual
-import org.firstinspires.ftc.teamcode.dashboard.DriveConfig
+import empireu.coyote.*
+import org.firstinspires.ftc.teamcode.dashboard.DriveConfig.*
 import org.firstinspires.ftc.teamcode.dashboard.LocalizerConfig.*
 
 class Encoder(val motor: DcMotorEx, var sign: Int = 1) {
@@ -56,21 +55,54 @@ class Holo3WheelLocalizer(hardwareMap: HardwareMap) {
     )
 }
 
+fun feedForward(velocity: Double, acceleration: Double) =
+    velocity * Kv + acceleration * Ka + Ks.signed(velocity)
+
+fun feedForwardDual(velocity: Dual): Double =
+    feedForward(velocity.value, velocity.tail().value)
+
+fun vCompFeedForward(velocity: Double, acceleration: Double, voltage: Double) =
+    feedForward(velocity, acceleration) / voltage
+
+fun vCompFeedForwardDual(velocity: Dual, voltage: Double): Double =
+    vCompFeedForward(velocity.value, velocity.tail().value, voltage)
+
+fun holoCommand(targetPosWorld: Pose2dDual, actualPosWorld: Pose2d): Twist2dDual {
+    val posError = targetPosWorld.value / actualPosWorld
+
+    // (tf = transform notation) world -> robot
+    val tfWorldRobot = Pose2dDual.const(actualPosWorld.inverse, 3)
+    val targetVelRobot = tfWorldRobot * targetPosWorld.velocity
+
+    return targetVelRobot + Twist2dDual.const(
+        Twist2d(
+            KPosX * posError.translation.x,
+            KPosY * posError.translation.y,
+            KPosR * posError.rotation.log()
+        ),
+        2 // Velocity and acceleration command
+    )
+}
+
 class MecanumDrive(hardwareMap: HardwareMap) {
-    val motorFL: DcMotorEx
-    val motorFR: DcMotorEx
-    val motorBL: DcMotorEx
-    val motorBR: DcMotorEx
-    val motors: List<DcMotor>
+    val motorFL = hardwareMap.get(DcMotorEx::class.java, "MotorFL")
+    val motorFR = hardwareMap.get(DcMotorEx::class.java, "MotorFR")
+    val motorBL = hardwareMap.get(DcMotorEx::class.java, "MotorBL")
+    val motorBR = hardwareMap.get(DcMotorEx::class.java, "MotorBR")
+    val motors = listOf(motorFL, motorFR, motorBL, motorBR)
+
+    val voltageSensor = hardwareMap.voltageSensor.first()
+
+    private val localizer = Holo3WheelLocalizer(hardwareMap)
+
+    var position = Pose2d(0.0, 0.0, 0.0)
+        private set
+
+    private val poseHistory = ArrayList<Pose2d>(1000)
+
+    private val watch = Stopwatch()
 
     init {
-        motorFL = hardwareMap.get(DcMotorEx::class.java, "MotorFL")
-        motorFR = hardwareMap.get(DcMotorEx::class.java, "MotorFR")
-        motorBL = hardwareMap.get(DcMotorEx::class.java, "MotorBL")
-        motorBR = hardwareMap.get(DcMotorEx::class.java, "MotorBR")
-
-        motors = listOf(motorFL, motorFR, motorBL, motorBR)
-
         motors.forEach { motor ->
             motor.motorType = motor.motorType.clone().also {
                 it.achieveableMaxRPMFraction = 1.0
@@ -90,11 +122,7 @@ class MecanumDrive(hardwareMap: HardwareMap) {
     }
 
     fun applyPower(power: Twist2d) {
-        val vel = MecanumKinematics.inverse(
-            Twist2dDual.const(power),
-            DriveConfig.A,
-            DriveConfig.B
-        )
+        val vel = MecanumKinematics.inverse(Twist2dDual.const(power), A, B)
 
         motorFL.power = vel.frontLeft.value
         motorFR.power = vel.frontRight.value
@@ -102,5 +130,37 @@ class MecanumDrive(hardwareMap: HardwareMap) {
         motorBR.power = vel.backRight.value
     }
 
+    fun applyWheelCommand(velRobot: Twist2dDual) {
+        val vel = MecanumKinematics.inverse(velRobot, A, B)
 
+        val voltage = voltageSensor.voltage
+
+        motorFL.power = vCompFeedForwardDual(vel.frontLeft, voltage)
+        motorFR.power = vCompFeedForwardDual(vel.frontRight, voltage)
+        motorBL.power = vCompFeedForwardDual(vel.backLeft, voltage)
+        motorBR.power = vCompFeedForwardDual(vel.backRight, voltage)
+    }
+
+    fun update() {
+        position += localizer.readIncr()
+
+        poseHistory.add(position)
+
+        if(poseHistory.size > 1000){
+            poseHistory.removeAt(0)
+        }
+
+        val packet = TelemetryPacket()
+
+        packet.addLine("Update Rate: ${1.0 / watch.sample()}")
+
+        val overlay = packet.fieldOverlay()
+
+        overlay.setStroke("red")
+
+        DashboardUtil.drawRobot(overlay, position)
+        DashboardUtil.drawPoseHistory(overlay, poseHistory)
+
+        FtcDashboard.getInstance().sendTelemetryPacket(packet)
+    }
 }
