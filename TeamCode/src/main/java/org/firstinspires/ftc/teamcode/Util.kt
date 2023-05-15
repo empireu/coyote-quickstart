@@ -54,7 +54,6 @@ class Stopwatch {
 }
 
 object DashboardUtil {
-    private const val DEFAULT_RESOLUTION = 2.0 // distance units; presumed inches
     private const val ROBOT_RADIUS = 9.0 // in
 
     fun drawPoseHistory(canvas: Canvas, poseHistory: List<Pose2d>) {

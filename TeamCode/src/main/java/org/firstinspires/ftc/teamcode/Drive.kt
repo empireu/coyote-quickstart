@@ -2,59 +2,11 @@ package org.firstinspires.ftc.teamcode
 
 import com.acmerobotics.dashboard.FtcDashboard
 import com.acmerobotics.dashboard.telemetry.TelemetryPacket
-import com.qualcomm.robotcore.hardware.DcMotor
-import com.qualcomm.robotcore.hardware.DcMotorEx
-import com.qualcomm.robotcore.hardware.DcMotorSimple
-import com.qualcomm.robotcore.hardware.HardwareMap
+import com.qualcomm.robotcore.hardware.*
 import empireu.coyote.*
 import org.firstinspires.ftc.teamcode.dashboard.DriveConfig.*
-import org.firstinspires.ftc.teamcode.dashboard.LocalizerConfig.*
+import org.firstinspires.ftc.teamcode.dashboard.LocalizerConfig
 import kotlin.math.absoluteValue
-
-class Encoder(val motor: DcMotorEx, var sign: Int = 1) {
-    constructor(map: HardwareMap, name: String) : this(
-        map.get(DcMotorEx::class.java, name)
-            ?: error("Failed to get encoder $name")
-    )
-
-    fun reversed(): Encoder {
-        return Encoder(motor, -sign)
-    }
-
-    private var lastPos: Int
-
-    init {
-        lastPos = readPosition()
-    }
-
-    fun readPosition() = motor.currentPosition * sign
-
-    fun readIncr(): Int {
-        val current = readPosition()
-        val increment = current - lastPos
-        lastPos = current
-
-        return increment
-    }
-}
-
-fun convertTicks(ticks: Double) = WheelRadius * 2.0 * Math.PI * ticks / TPR
-fun Encoder.readDistIncr() = convertTicks(this.readIncr().toDouble())
-
-class Holo3WheelLocalizer(hardwareMap: HardwareMap) {
-    val lEnc = Encoder(hardwareMap, "MotorBR")
-    val rEnc = Encoder(hardwareMap, "MotorFL")
-    val cEnc = Encoder(hardwareMap, "MotorFR").reversed()
-
-    fun readIncr() = Odometry.holo3WheelIncr(
-        lIncr = lEnc.readDistIncr(),
-        rIncr = rEnc.readDistIncr(),
-        cIncr = cEnc.readDistIncr(),
-        lY = LY,
-        rY = RY,
-        cX = CX
-    )
-}
 
 fun feedForward(velocity: Double, acceleration: Double) =
     velocity * Kv + acceleration * Ka + Ks.signed(velocity)
@@ -127,23 +79,20 @@ class HoloTrajectoryController(val trajectory: Trajectory) {
 }
 
 class MecanumDrive(hardwareMap: HardwareMap) : IDriveController {
-    val motorFL = hardwareMap.get(DcMotorEx::class.java, "MotorFL")
-    val motorFR = hardwareMap.get(DcMotorEx::class.java, "MotorFR")
-    val motorBL = hardwareMap.get(DcMotorEx::class.java, "MotorBL")
-    val motorBR = hardwareMap.get(DcMotorEx::class.java, "MotorBR")
+    val motorFL: DcMotorEx = hardwareMap.get(DcMotorEx::class.java, "MotorFL")
+    val motorFR: DcMotorEx = hardwareMap.get(DcMotorEx::class.java, "MotorFR")
+    val motorBL: DcMotorEx = hardwareMap.get(DcMotorEx::class.java, "MotorBL")
+    val motorBR: DcMotorEx = hardwareMap.get(DcMotorEx::class.java, "MotorBR")
     val motors = listOf(motorFL, motorFR, motorBL, motorBR)
 
-    val voltageSensor = hardwareMap.voltageSensor.first()
+    val voltageSensor: VoltageSensor = hardwareMap.voltageSensor.first()
 
-    private val localizer: Holo3WheelLocalizer
+    private val localizer: ILocalizer
 
     var position = Pose2d(0.0, 0.0, 0.0)
         private set
 
-    private val poseHistory = ArrayList<Pose2d>(1000)
-
-    private val watch = Stopwatch()
-
+    private val poseHistory = ArrayList<Pose2d>()
     private var controller: HoloTrajectoryController? = null
 
     init {
@@ -162,18 +111,14 @@ class MecanumDrive(hardwareMap: HardwareMap) : IDriveController {
         localizer = Holo3WheelLocalizer(hardwareMap)
     }
 
-    fun resetPower() {
-        motors.forEach { it.power = 0.0 }
-    }
-
     fun applyDrivePower(power: Twist2d) {
-        if(power.approxEqs(Twist2d(0.0, 0.0, 0.0), 10e-5)){
+        if(power.approxEqs(Twist2d.zero, 10e-6)){
             resetPower()
 
             return
         }
 
-        applyWheelCommand(
+        applyVelocity(
             Twist2dDual.const(
                 Twist2d(
                     power.trVelocity * DriveTVel,
@@ -183,13 +128,18 @@ class MecanumDrive(hardwareMap: HardwareMap) : IDriveController {
         )
     }
 
-    fun applyWheelCommand(velRobot: Twist2dDual) {
-        val vel = MecanumKinematics.inverse(velRobot, A, B)
+    fun applyVelocity(velRobot: Twist2dDual) {
+        val v = MecanumKinematics.inverse(velRobot, A, B)
         val voltage = voltageSensor.voltage
-        motorFL.power = vCompFeedForwardDual(vel.frontLeft, voltage)
-        motorFR.power = vCompFeedForwardDual(vel.frontRight, voltage)
-        motorBL.power = vCompFeedForwardDual(vel.backLeft, voltage)
-        motorBR.power = vCompFeedForwardDual(vel.backRight, voltage)
+
+        motorFL.power = vCompFeedForwardDual(v.frontLeft, voltage)
+        motorFR.power = vCompFeedForwardDual(v.frontRight, voltage)
+        motorBL.power = vCompFeedForwardDual(v.backLeft, voltage)
+        motorBR.power = vCompFeedForwardDual(v.backRight, voltage)
+    }
+
+    fun resetPower() {
+        motors.forEach { it.power = 0.0 }
     }
 
     fun update() {
@@ -202,13 +152,15 @@ class MecanumDrive(hardwareMap: HardwareMap) : IDriveController {
         }
 
         val packet = TelemetryPacket()
-        packet.addLine("Update Rate: ${1.0 / watch.sample()}")
+
+        packet.addLine("$position")
+
         val overlay = packet.fieldOverlay()
 
         val controller = this.controller
 
         if(controller != null) {
-            applyWheelCommand(
+            applyVelocity(
                 controller.update(
                     actualPosWorld = position
                 )

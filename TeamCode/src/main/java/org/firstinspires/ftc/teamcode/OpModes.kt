@@ -5,20 +5,18 @@ import com.acmerobotics.dashboard.telemetry.MultipleTelemetry
 import com.qualcomm.hardware.lynx.LynxModule
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp
-import com.qualcomm.robotcore.hardware.DcMotor
-import com.qualcomm.robotcore.hardware.HardwareMap
 import empireu.coyote.*
 import org.firstinspires.ftc.teamcode.dashboard.CoyoteConfig.*
 import org.firstinspires.ftc.teamcode.dashboard.LocalizerConfig
+import org.firstinspires.ftc.teamcode.temp.ArmSystem
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.lang.Integer.parseInt
 import java.net.URL
 import kotlin.math.PI
-import kotlin.math.abs
 
-@TeleOp(name = "Motor Test")
+@TeleOp(name = "Motor Test", group = "Tuning")
 class MotorTestOpMode: LinearOpMode() {
     override fun runOpMode() {
         val drive = MecanumDrive(hardwareMap)
@@ -59,7 +57,7 @@ class ManualOpMode : LinearOpMode() {
     }
 }
 
-@TeleOp(name = "Odometry Tuner")
+@TeleOp(name = "Odometry Tuner", group = "Tuning")
 class OdometryTunerOpMode : LinearOpMode() {
     override fun runOpMode() {
         telemetry = FtcDashboard.getInstance().telemetry
@@ -80,13 +78,13 @@ class OdometryTunerOpMode : LinearOpMode() {
                 Twist2d(
                     0.0,
                     0.0,
-                    -gamepad1.right_stick_x.toDouble() * 4
+                    -gamepad1.right_stick_x.toDouble()
                 )
             )
 
-            l += localizer.lEnc.readDistIncr()
-            r += localizer.rEnc.readDistIncr()
-            c += localizer.cEnc.readDistIncr()
+            l += localizer.lEnc.readIncr()
+            r += localizer.rEnc.readIncr()
+            c += localizer.cEnc.readIncr()
 
             telemetry.addData("left distance", l / angularDisp)
             telemetry.addData("right distance", r / angularDisp)
@@ -145,6 +143,7 @@ class CoyoteDownload : LinearOpMode() {
 
             telemetry.addData("Download size: ", total)
             telemetry.update()
+            sleep(1000)
         }
         catch (t: Throwable){
             telemetry.addData("Network Error: ", t)
@@ -168,7 +167,6 @@ class CoyoteOpMode : LinearOpMode() {
             ?: error("Failed to get node project $NodeProjectName")
 
         val drive = MecanumDrive(hardwareMap)
-
         val node: BehaviorNode
 
         try {
@@ -179,7 +177,7 @@ class CoyoteOpMode : LinearOpMode() {
                     b.add("Selector", { ctx -> BehaviorSelectorNode(ctx.name, ctx.runOnce, ctx.childNodes) })
                     b.add("Success", { ctx -> BehaviorResultNode(ctx.name, ctx.runOnce, ctx.one(), BehaviorStatus.Success) })
                     b.add("Parallel", { ctx -> BehaviorParallelNode(ctx.name, ctx.runOnce, ctx.childNodes) })
-                    b.add("Repeat", { ctx -> RepeatNode(ctx.name, ctx.runOnce, parseInt(ctx.savedData), ctx.one()) })
+                    b.add("Repeat", { ctx -> BehaviorRepeatNode(ctx.name, ctx.runOnce, parseInt(ctx.savedData), ctx.one()) })
 
                     b.add(
                         "Call",
@@ -211,12 +209,9 @@ class CoyoteOpMode : LinearOpMode() {
                 }
                 .first()
                 .root
-
-
-
         }
         catch (t: Throwable) {
-            telemetry.addData("ERROR", t)
+            telemetry.addData("ERROR", t.fillInStackTrace())
             telemetry.update()
             sleep(10000)
             return
@@ -249,93 +244,8 @@ class CoyoteOpMode : LinearOpMode() {
     }
 
     private fun registerNodes(builder: BehaviorMapBuilder) {
-        builder.add("Arm", { ctx -> ArmNode(ctx.name, ctx.runOnce, ctx.savedData, hardwareMap) })
-    }
-
-    class ArmNode(name: String, runOnce: Boolean, stored: String, hardwareMap: HardwareMap): BehaviorCompositeNode(name, runOnce, stored) {
-        enum class ArmPreset(val joint: Int, val elevator: Int, val rotator: Double) {
-            Pickup(230, 20, 0.78),
-            Carry(230, 1000, 0.78),
-            Place(300, 20, 0.78)
-        }
-
-        companion object {
-            private const val ClawLClosed = 0.0
-            private const val ClawRClosed = 1.0
-            private const val ClawLOpen = 0.5
-            private const val ClawROpen = 0.75
-
-            private const val JointSpeed = 0.25
-            private const val ElevatorSpeed = 0.5
-
-            private const val ElevatorTolerance = 30
-            private const val JointTolerance = 50
-            private const val RotatorTolerance = 0.05
-            private const val ClawTolerance = 0.05
-        }
-
-        data class ArmOption(
-            val closed: Boolean,
-            val preset: ArmPreset
-        )
-
-        private val opt = loadStorage(ArmOption::class)
-        private val jointMotor = hardwareMap.dcMotor.get("MotorJoint")
-        private val elevatorMotor = hardwareMap.dcMotor.get("MotorElevator")
-        private val rotatorServo = hardwareMap.servo.get("ServoRotator")
-        private val claws = listOf(hardwareMap.servo.get("ServoClaw1"), hardwareMap.servo.get("ServoClaw2"))
-
-        private val c0Tgt: Double
-        private val c1Tgt: Double
-
-        init {
-            jointMotor.zeroPowerBehavior = DcMotor.ZeroPowerBehavior.BRAKE
-            elevatorMotor.zeroPowerBehavior = DcMotor.ZeroPowerBehavior.BRAKE
-
-            if(opt.closed){
-                c0Tgt = ClawLClosed
-                c1Tgt = ClawRClosed
-            }
-            else{
-                c0Tgt = ClawLOpen
-                c1Tgt = ClawROpen
-            }
-        }
-
-        override fun update(context: BehaviorContext): BehaviorStatus {
-            jointMotor.targetPosition = opt.preset.joint
-            elevatorMotor.targetPosition = opt.preset.elevator
-
-            jointMotor.mode = DcMotor.RunMode.RUN_TO_POSITION
-            elevatorMotor.mode = DcMotor.RunMode.RUN_TO_POSITION
-
-            jointMotor.power = JointSpeed
-            elevatorMotor.power = ElevatorSpeed
-
-            rotatorServo.position = opt.preset.rotator
-
-            if(
-                abs(opt.preset.elevator - elevatorMotor.currentPosition) > ElevatorTolerance ||
-                abs(opt.preset.joint - jointMotor.currentPosition) > JointTolerance ||
-                abs(opt.preset.rotator - rotatorServo.position) > RotatorTolerance)
-            {
-                // Wait for claw assembly to reach target before closing/opening claw
-
-                return BehaviorStatus.Running
-            }
-
-            claws[0].position = c0Tgt
-            claws[1].position = c1Tgt
-
-            if(
-                abs(c0Tgt - claws[0].position) < ClawTolerance &&
-                abs(c1Tgt - claws[1].position) < ClawTolerance)
-            {
-                return BehaviorStatus.Success
-            }
-
-            return BehaviorStatus.Running
-        }
-
+        builder.add("Arm", { ctx ->
+            SystemNode(ctx) { ArmSystem(it, hardwareMap) }
+        })
     }
 }
